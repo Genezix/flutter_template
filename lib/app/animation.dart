@@ -1,10 +1,8 @@
 import 'dart:async';
 import 'dart:typed_data';
 
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
-import 'package:flutter/widgets.dart';
 import 'package:rive/rive.dart';
 
 /// Basic example playing a Rive animation from a packaged asset.
@@ -16,19 +14,21 @@ class BasicText extends StatefulWidget {
 }
 
 class _BasicTextState extends State<BasicText> {
-  Artboard? _artboard;
+  Artboard? _mainArtboard;
   RiveFile? _file;
   late RiveAnimationController<RuntimeArtboard> _controller;
+  late List<RiveAnimationController<RuntimeArtboard>> _currentControllers;
   late TextValueRun? _dynamicTextController;
   late SMITrigger? trigger;
   late StateMachineController? stateMachineController;
-  late List<String> animations;
+  late List<String> allAnimations;
   late List<String> loopAnimations;
   late List<String> selectedAnimations = [];
+  late String currentAnimation;
+  late AnimationScreenData currentAnimationScreenData;
+  late List<AnimationScreenData> animationScreenDatas;
   final TextEditingController _fieldController = TextEditingController();
-
-  /// Toggles between play and pause animation states
-  void _togglePlay() => setState(() => _controller.isActive = !_controller.isActive);
+  bool isPause = false;
 
   /// Tracks if the animation is playing by whether controller is running
   bool get isPlaying => _controller.isActive;
@@ -45,8 +45,10 @@ class _BasicTextState extends State<BasicText> {
     final body = Uint8List.view(fontData.buffer);
     final font = await FontAsset.parseBytes(body);
 
+    // Load asset https://help.rive.app/runtimes/loading-assets
     _file = await RiveFile.asset(
-      'assets/rating_animation.riv',
+      'assets/retrainspective_2024_clean.riv',
+      // Charger les fonts
       assetLoader: CallbackAssetLoader(
         (asset, bytes) async {
           if (asset is FontAsset) {
@@ -59,21 +61,110 @@ class _BasicTextState extends State<BasicText> {
       ),
     );
 
-    final Artboard artboard = _file!.mainArtboard;
-    final textRun = artboard.textRun('user_name');
+    _mainArtboard = _file!.mainArtboard;
+    final List<Artboard> artboards = _file!.artboards.where((element) => element != _mainArtboard).toList();
 
-    animations = artboard.animations.values.map((e) => e.name).toList();
+    animationScreenDatas = artboards.map((artboard) {
+      // Animation
+      final animationNames = artboard.linearAnimations.map((element) => element.name).toList();
+      // Animation controller
+      final controllers = animationNames
+          .map(
+            (name) => CustomOneShotAnimation(
+              name,
+              onStop: () => nextAnimation(comeFromOnStop: true),
+            ),
+          )
+          .toList();
+
+      return AnimationScreenData(
+        animationNames: animationNames,
+        animationControllers: controllers,
+        artboard: artboard,
+      );
+      // Texts run ???
+    }).toList();
+
+    final textRun = _mainArtboard?.component<TextValueRun>('Nom Region');
+    final components = artboards.forEach((artboard) {
+      final region = artboard.component<TextValueRun>('Nom Region');
+      if (region != null) region.text = 'Ile de France';
+      final number = artboard.component<TextValueRun>('number');
+      if (number != null) number.text = '12678';
+      artboard.components.whereType<TextValueRun>().forEach((element) {
+        print('${element.name} => ${element.text}');
+      });
+    });
+
+    allAnimations = _mainArtboard!.linearAnimations.map((e) => e.name).toList();
+
+    currentAnimation = allAnimations.first;
 
     // Remplace le texte
-    if (newText != null) textRun?.text = newText;
+    // if (newText != null) textRun?.text = 'Ma bite';
 
-    setState(() => _artboard = artboard);
+    setState(() {
+      currentAnimationScreenData =
+          animationScreenDatas.firstWhere((element) => element.animationNames.contains(currentAnimation));
+      _mainArtboard = currentAnimationScreenData.artboard;
+    });
   }
 
   void setDynamicText(String newText) {
     setState(() {
       _loadRiveFile(newText: newText);
     });
+  }
+
+  /// Toggles between play and pause animation states
+  void _togglePlay() => setState(() {
+        if (currentAnimationScreenData.animationControllers.any((element) => element.isActive)) {
+          isPause = true;
+          setState(() {
+            currentAnimationScreenData.animationControllers.forEach((element) {
+              element.isActive = false;
+            });
+          });
+        } else if (isPause) {
+          isPause = false;
+          setState(() {
+            currentAnimationScreenData.animationControllers.forEach((element) {
+              element.isActive = true;
+            });
+          });
+        }
+      });
+
+  void nextAnimation({bool comeFromOnStop = false}) {
+    if (!isPause || !comeFromOnStop) {
+      isPause = false;
+      final index = allAnimations.indexOf(currentAnimation);
+
+      if (index + 1 < allAnimations.length) {
+        currentAnimation = allAnimations[index + 1];
+
+        setState(() {
+          currentAnimationScreenData =
+              animationScreenDatas.firstWhere((element) => element.animationNames.contains(currentAnimation));
+          currentAnimationScreenData.animationControllers.forEach((element) {
+            element.isActive = true;
+          });
+        });
+      }
+    }
+  }
+
+  void previousAnimation() {
+    final index = allAnimations.indexOf(currentAnimation);
+
+    if (index - 1 >= 0) {
+      currentAnimation = allAnimations[index - 1];
+
+      setState(() {
+        currentAnimationScreenData =
+            animationScreenDatas.firstWhere((element) => element.animationNames.contains(currentAnimation));
+      });
+    }
   }
 
   @override
@@ -83,89 +174,62 @@ class _BasicTextState extends State<BasicText> {
         title: const Text('POC RIVE'),
       ),
       body: SingleChildScrollView(
-        child: _artboard != null
+        child: _mainArtboard != null
             ? Column(
                 children: [
                   Container(
-                    height: 300,
+                    height: 600,
                     child: RiveAnimation.direct(
                       _file!,
-                      animations: selectedAnimations,
-                      controllers: [_controller],
-                    ),
-                  ),
-                  // Expanded(
-                  //     child: Rive(
-                  //   artboard: _artboard!,
-                  //   fit: BoxFit.contain,
-                  // )),
-                  Container(
-                    height: 100,
-                    child: ListView(
-                      scrollDirection: Axis.horizontal,
-                      children: List.generate(
-                        animations.length,
-                        (index) => Row(
-                          children: [
-                            Checkbox(
-                              value: selectedAnimations.contains(animations[index]),
-                              onChanged: (value) {
-                                setState(() {
-                                  if (value ?? false) {
-                                    selectedAnimations.add(animations[index]);
-                                  } else {
-                                    selectedAnimations.remove(animations[index]);
-                                  }
-                                });
-
-                                _loadRiveFile(newText: _fieldController.text.isEmpty ? null : _fieldController.text);
-                              },
-                            ),
-                            Text(animations[index]),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                  InkWell(
-                    onTap: _togglePlay,
-                    child: Card(
-                      child: Container(
-                        width: 70,
-                        height: 70,
-                        child: Center(
-                          child: Text(_controller.isActive ? 'Pause' : 'Start'),
-                        ),
-                      ),
+                      artboard: currentAnimationScreenData.artboard.name,
+                      // animations: currentAnimationScreenData.animationNames,
+                      controllers: currentAnimationScreenData.animationControllers,
                     ),
                   ),
                   Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceAround,
                     children: [
-                      Expanded(
-                        child: Padding(
-                          padding: const EdgeInsets.all(16.0),
-                          child: TextField(
-                            controller: _fieldController,
+                      InkWell(
+                        onTap: previousAnimation,
+                        child: Card(
+                          child: Container(
+                            width: 70,
+                            height: 70,
+                            child: Center(
+                              child: Text('Previous'),
+                            ),
                           ),
                         ),
                       ),
-                      Padding(
-                        padding: const EdgeInsets.only(right: 16.0),
-                        child: InkWell(
-                          child: Card(
-                            child: Container(
-                              width: 70,
-                              height: 70,
-                              child: Center(
-                                child: Text('Update'),
-                              ),
+                      InkWell(
+                        onTap: _togglePlay,
+                        child: Card(
+                          child: Container(
+                            width: 70,
+                            height: 70,
+                            child: Center(
+                              child: Text(
+                                  currentAnimationScreenData.animationControllers.any((element) => element.isActive)
+                                      ? 'Pause'
+                                      : 'Start'),
                             ),
                           ),
-                          onTap: () => setDynamicText(_fieldController.text),
+                        ),
+                      ),
+                      InkWell(
+                        onTap: nextAnimation,
+                        child: Card(
+                          child: Container(
+                            width: 70,
+                            height: 70,
+                            child: Center(
+                              child: Text('Next'),
+                            ),
+                          ),
                         ),
                       ),
                     ],
-                  )
+                  ),
                 ],
               )
             : const SizedBox.shrink(),
@@ -174,6 +238,63 @@ class _BasicTextState extends State<BasicText> {
   }
 }
 
+class AnimationScreenData {
+  AnimationScreenData({
+    required this.animationNames,
+    required this.animationControllers,
+    required this.artboard,
+    // required this.textRuns,
+  });
+
+  final List<String> animationNames;
+  final List<SimpleAnimation> animationControllers;
+  final Artboard artboard;
+// final List<TextValueRun> textRuns;
+}
+
 extension _TextExtension on Artboard {
   TextValueRun? textRun(String name) => component<TextValueRun>(name);
+}
+
+/// This allows a value of type T or T?
+/// to be treated as a value of type T?.
+///
+/// We use this so that APIs that have become
+/// non-nullable can still be used with `!` and `?`
+/// to support older versions of the API as well.
+T? _ambiguate<T>(T? value) => value;
+
+/// Controller tailored for managing one-shot animations
+class CustomOneShotAnimation extends SimpleAnimation {
+  /// Fires when the animation stops being active
+  final VoidCallback? onStop;
+
+  /// Fires when the animation starts being active
+  final VoidCallback? onStart;
+
+  CustomOneShotAnimation(
+    String animationName, {
+    double mix = 1,
+    bool autoplay = true,
+    this.onStop,
+    this.onStart,
+  }) : super(animationName, mix: mix, autoplay: autoplay) {
+    isActiveChanged.addListener(onActiveChanged);
+  }
+
+  /// Dispose of any callback listeners
+  @override
+  void dispose() {
+    isActiveChanged.removeListener(onActiveChanged);
+    super.dispose();
+  }
+
+  /// Perform tasks when the animation's active state changes
+  void onActiveChanged() {
+    // Fire any callbacks
+    isActive
+        ? onStart?.call()
+        // onStop can fire while widgets are still drawing
+        : _ambiguate(WidgetsBinding.instance)?.addPostFrameCallback((_) => onStop?.call());
+  }
 }
